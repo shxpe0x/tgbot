@@ -36,7 +36,9 @@ class UserDB:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            # Return connection to pool
+            if conn:
+                conn.close()
 
 class BirthdayDB:
     """Birthday database operations."""
@@ -61,7 +63,8 @@ class BirthdayDB:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            if conn:
+                conn.close()
     
     @staticmethod
     def get_all(user_id: int) -> list:
@@ -80,7 +83,8 @@ class BirthdayDB:
             logger.error(f"Error getting birthdays: {e}")
             raise
         finally:
-            conn.close()
+            if conn:
+                conn.close()
     
     @staticmethod
     def delete(birthday_id: int, user_id: int) -> bool:
@@ -99,7 +103,8 @@ class BirthdayDB:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            if conn:
+                conn.close()
     
     @staticmethod
     def get_upcoming(user_id: int, days: int = 30) -> list:
@@ -107,27 +112,50 @@ class BirthdayDB:
         conn = get_connection()
         try:
             with conn.cursor(dictionary=True) as cursor:
+                # Get all birthdays for user
                 cursor.execute(
                     '''SELECT id, friend_name, birth_date, birth_year
-                       FROM birthdays WHERE user_id = %s
-                       AND (
-                           (DAYOFYEAR(birth_date) >= DAYOFYEAR(CURDATE()) 
-                            AND DAYOFYEAR(birth_date) <= DAYOFYEAR(CURDATE()) + %s)
-                           OR
-                           (DAYOFYEAR(birth_date) < DAYOFYEAR(CURDATE())
-                            AND DAYOFYEAR(birth_date) <= (DAYOFYEAR(CURDATE()) + %s - 365))
-                       )
-                       ORDER BY 
-                           CASE 
-                               WHEN DAYOFYEAR(birth_date) >= DAYOFYEAR(CURDATE())
-                               THEN DAYOFYEAR(birth_date)
-                               ELSE DAYOFYEAR(birth_date) + 365
-                           END''',
-                    (user_id, days, days)
+                       FROM birthdays WHERE user_id = %s''',
+                    (user_id,)
                 )
-                return cursor.fetchall()
+                all_birthdays = cursor.fetchall()
+                
+                # Filter in Python for better readability
+                today = datetime.now().date()
+                upcoming = []
+                
+                for bd in all_birthdays:
+                    bd_date = bd['birth_date']
+                    try:
+                        # Create birthday date for this year
+                        this_year_bd = date(today.year, bd_date.month, bd_date.day)
+                    except ValueError:
+                        # Handle leap year edge case (29 Feb)
+                        this_year_bd = date(today.year, bd_date.month, 28)
+                    
+                    # If birthday already passed this year, check next year
+                    if this_year_bd < today:
+                        try:
+                            this_year_bd = date(today.year + 1, bd_date.month, bd_date.day)
+                        except ValueError:
+                            this_year_bd = date(today.year + 1, bd_date.month, 28)
+                    
+                    days_until = (this_year_bd - today).days
+                    
+                    if 0 <= days_until <= days:
+                        upcoming.append(bd)
+                
+                # Sort by days until birthday
+                upcoming.sort(key=lambda x: (
+                    (date(today.year, x['birth_date'].month, x['birth_date'].day) 
+                     if date(today.year, x['birth_date'].month, x['birth_date'].day) >= today
+                     else date(today.year + 1, x['birth_date'].month, x['birth_date'].day)) - today
+                ).days)
+                
+                return upcoming
         except Exception as e:
             logger.error(f"Error getting upcoming birthdays: {e}")
             raise
         finally:
-            conn.close()
+            if conn:
+                conn.close()
