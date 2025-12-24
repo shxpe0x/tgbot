@@ -182,6 +182,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             
             user_data[message.chat.id] = {'name': message.text}
             user_states[message.chat.id] = 'waiting_date'
+            logger.info(f"Saved name for user {message.chat.id}: {message.text}")
             
             bot.send_message(
                 message.chat.id,
@@ -228,6 +229,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             
             user_data[message.chat.id]['birth_date'] = birth_date
             user_data[message.chat.id]['birth_year'] = birth_year
+            logger.info(f"Saved date for user {message.chat.id}: {birth_date}")
             
             # Show confirmation
             name = user_data[message.chat.id]['name']
@@ -257,17 +259,27 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     def handle_confirmation(call: types.CallbackQuery):
         """Handle confirmation callback."""
         try:
+            logger.info(f"Callback received: {call.data} from user {call.from_user.id}")
+            logger.info(f"User data: {user_data.get(call.message.chat.id, {})}")
+            
             if call.data == 'confirm_add':
                 # Save to database
                 user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
                 data = user_data.get(call.message.chat.id, {})
                 
-                BirthdayDB.add(
+                if not data:
+                    logger.error(f"No data found for user {call.message.chat.id}")
+                    bot.answer_callback_query(call.id, '❌ Ошибка: данные не найдены')
+                    return
+                
+                logger.info(f"Saving birthday for user {user_id}: {data}")
+                birthday_id = BirthdayDB.add(
                     user_id=user_id,
                     friend_name=data['name'],
                     birth_date=data['birth_date'],
                     birth_year=data.get('birth_year')
                 )
+                logger.info(f"Birthday saved with ID: {birthday_id}")
                 
                 bot.answer_callback_query(call.id)
                 bot.edit_message_text(
@@ -287,9 +299,10 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             # Clear state
             user_states.pop(call.message.chat.id, None)
             user_data.pop(call.message.chat.id, None)
+            logger.info(f"Cleared state for user {call.message.chat.id}")
             
         except Exception as e:
-            logger.error(f"Error in handle_confirmation: {e}")
+            logger.error(f"Error in handle_confirmation: {e}", exc_info=True)
             bot.answer_callback_query(call.id, MESSAGES['error'])
     
     @bot.message_handler(commands=['list'])
