@@ -3,7 +3,7 @@ import telebot
 from telebot import types
 import logging
 from config import MESSAGES
-from keyboards.reply_keyboards import get_main_menu
+from keyboards.inline_keyboards import get_main_menu
 from database.models import UserDB
 from utils.rate_limiter import rate_limit
 
@@ -42,6 +42,7 @@ def register_command_handlers(bot: telebot.TeleBot):
             bot.send_message(
                 message.chat.id,
                 MESSAGES['help'],
+                reply_markup=get_main_menu(),
                 parse_mode='HTML'
             )
         except Exception as e:
