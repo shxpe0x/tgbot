@@ -17,6 +17,22 @@ user_data = {}
 def register_birthday_handlers(bot: telebot.TeleBot):
     """Register all birthday handlers."""
     
+    # ==================== COMMANDS ====================
+    
+    @bot.message_handler(commands=['cancel'])
+    def cmd_cancel(message):
+        """Cancel current operation."""
+        if message.chat.id in user_states:
+            user_states.pop(message.chat.id, None)
+            user_data.pop(message.chat.id, None)
+            bot.send_message(
+                message.chat.id,
+                '❌ Отменено',
+                reply_markup=get_main_menu()
+            )
+        else:
+            bot.send_message(message.chat.id, 'ℹ️ Нет активных операций')
+    
     # ==================== TEXT BUTTON HANDLERS ====================
     
     @bot.message_handler(func=lambda m: m.text == '➕ Добавить')
@@ -93,9 +109,19 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             for bd in birthdays:
                 date_str = bd['birth_date'].strftime('%d.%m')
                 today = datetime.now().date()
-                this_year_bd = date(today.year, bd['birth_date'].month, bd['birth_date'].day)
+                
+                try:
+                    this_year_bd = date(today.year, bd['birth_date'].month, bd['birth_date'].day)
+                except ValueError:
+                    # Leap year edge case
+                    this_year_bd = date(today.year, bd['birth_date'].month, 28)
+                
                 if this_year_bd < today:
-                    this_year_bd = date(today.year + 1, bd['birth_date'].month, bd['birth_date'].day)
+                    try:
+                        this_year_bd = date(today.year + 1, bd['birth_date'].month, bd['birth_date'].day)
+                    except ValueError:
+                        this_year_bd = date(today.year + 1, bd['birth_date'].month, 28)
+                
                 days_left = (this_year_bd - today).days
                 
                 text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
@@ -181,21 +207,36 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     
     @bot.message_handler(func=lambda m: user_states.get(m.chat.id) == 'waiting_date')
     def state_waiting_date(message):
-        """Get date and save."""
+        """Get date and save with validation."""
         logger.info(f"Got date: {message.text}")
         try:
             date_text = message.text.strip()
             birth_date = None
             birth_year = None
             
+            # Try parsing different formats
             for fmt in ['%d.%m.%Y', '%d.%m']:
                 try:
                     parsed = datetime.strptime(date_text, fmt)
-                    if fmt == '%d.%m.%Y':
-                        birth_year = parsed.year
-                        birth_date = parsed.date()
-                    else:
-                        birth_date = date(datetime.now().year, parsed.month, parsed.day)
+                    
+                    # Validate the date actually exists
+                    try:
+                        if fmt == '%d.%m.%Y':
+                            birth_year = parsed.year
+                            birth_date = date(parsed.year, parsed.month, parsed.day)
+                        else:
+                            # For dates without year, check if it's valid
+                            birth_date = date(datetime.now().year, parsed.month, parsed.day)
+                    except ValueError as e:
+                        # Invalid date like 31.02 or 29.02 in non-leap year
+                        bot.send_message(
+                            message.chat.id,
+                            f'❌ Неверная дата! Такой даты не существует.\nПример: <code>25.12.2000</code>',
+                            reply_markup=get_cancel_keyboard(),
+                            parse_mode='HTML'
+                        )
+                        return
+                    
                     break
                 except ValueError:
                     continue
@@ -203,8 +244,9 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             if not birth_date:
                 bot.send_message(
                     message.chat.id,
-                    '❌ Неверный формат! Используй ДД.ММ.ГГГГ или ДД.ММ',
-                    reply_markup=get_cancel_keyboard()
+                    '❌ Неверный формат! Используй ДД.ММ.ГГГГ или ДД.ММ\nПример: <code>25.12.2000</code>',
+                    reply_markup=get_cancel_keyboard(),
+                    parse_mode='HTML'
                 )
                 return
             
