@@ -10,6 +10,7 @@ from keyboards.inline_keyboards import (
     get_delete_keyboard
 )
 from config import MESSAGES
+from utils.rate_limiter import rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     """Register all birthday handlers."""
     
     @bot.message_handler(commands=['add'])
+    @rate_limit(seconds=2)
     def cmd_add(message: types.Message):
         """Start adding birthday process."""
         try:
@@ -131,6 +133,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                     birth_year=data.get('birth_year')
                 )
                 
+                bot.answer_callback_query(call.id)
                 bot.edit_message_text(
                     '✅ <b>День рождения успешно добавлен!</b>',
                     chat_id=call.message.chat.id,
@@ -138,6 +141,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                     parse_mode='HTML'
                 )
             else:
+                bot.answer_callback_query(call.id)
                 bot.edit_message_text(
                     MESSAGES['cancel'],
                     chat_id=call.message.chat.id,
@@ -153,6 +157,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             bot.answer_callback_query(call.id, MESSAGES['error'])
     
     @bot.message_handler(commands=['list'])
+    @rate_limit(seconds=2)
     def cmd_list(message: types.Message):
         """Show all birthdays."""
         try:
@@ -188,6 +193,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             bot.reply_to(message, MESSAGES['error'])
     
     @bot.message_handler(commands=['upcoming'])
+    @rate_limit(seconds=2)
     def cmd_upcoming(message: types.Message):
         """Show upcoming birthdays."""
         try:
@@ -233,6 +239,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             bot.reply_to(message, MESSAGES['error'])
     
     @bot.message_handler(commands=['delete'])
+    @rate_limit(seconds=2)
     def cmd_delete(message: types.Message):
         """Start delete process."""
         try:
@@ -266,6 +273,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
             
             if BirthdayDB.delete(birthday_id, user_id):
+                bot.answer_callback_query(call.id)
                 bot.edit_message_text(
                     '✅ <b>День рождения успешно удален!</b>',
                     chat_id=call.message.chat.id,
@@ -286,6 +294,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             user_states.pop(call.message.chat.id, None)
             user_data.pop(call.message.chat.id, None)
             
+            bot.answer_callback_query(call.id)
             bot.edit_message_text(
                 MESSAGES['cancel'],
                 chat_id=call.message.chat.id,
@@ -293,3 +302,4 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             )
         except Exception as e:
             logger.error(f"Error in handle_cancel: {e}")
+            bot.answer_callback_query(call.id, MESSAGES['error'])
