@@ -151,6 +151,110 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     global _bot
     _bot = bot
     
+    # DEBUG: Catch-all callback handler to see ALL callbacks
+    @bot.callback_query_handler(func=lambda call: True)
+    def debug_all_callbacks(call: types.CallbackQuery):
+        """Log all callbacks for debugging."""
+        logger.info(f"[DEBUG] Callback received: {call.data} from user {call.from_user.id} in chat {call.message.chat.id}")
+        
+        # Handle specific callbacks
+        if call.data in ['confirm_add', 'cancel_add']:
+            handle_confirmation_callback(call)
+        elif call.data.startswith('delete_'):
+            handle_delete_callback(call)
+        elif call.data == 'cancel':
+            handle_cancel_callback(call)
+        else:
+            logger.warning(f"Unknown callback data: {call.data}")
+            bot.answer_callback_query(call.id, '❌ Неизвестная команда')
+    
+    def handle_confirmation_callback(call: types.CallbackQuery):
+        """Handle confirmation callback."""
+        try:
+            logger.info(f"Handling confirmation: {call.data}")
+            logger.info(f"User data: {user_data.get(call.message.chat.id, {})}")
+            logger.info(f"User states: {user_states.get(call.message.chat.id, 'no state')}")
+            
+            if call.data == 'confirm_add':
+                # Save to database
+                user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
+                data = user_data.get(call.message.chat.id, {})
+                
+                if not data:
+                    logger.error(f"No data found for user {call.message.chat.id}")
+                    bot.answer_callback_query(call.id, '❌ Ошибка: данные не найдены')
+                    return
+                
+                logger.info(f"Saving birthday for user {user_id}: {data}")
+                birthday_id = BirthdayDB.add(
+                    user_id=user_id,
+                    friend_name=data['name'],
+                    birth_date=data['birth_date'],
+                    birth_year=data.get('birth_year')
+                )
+                logger.info(f"Birthday saved with ID: {birthday_id}")
+                
+                bot.answer_callback_query(call.id)
+                bot.edit_message_text(
+                    '✅ <b>День рождения успешно добавлен!</b>',
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id,
+                    parse_mode='HTML'
+                )
+            else:
+                bot.answer_callback_query(call.id)
+                bot.edit_message_text(
+                    MESSAGES['cancel'],
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id
+                )
+            
+            # Clear state
+            user_states.pop(call.message.chat.id, None)
+            user_data.pop(call.message.chat.id, None)
+            logger.info(f"Cleared state for user {call.message.chat.id}")
+            
+        except Exception as e:
+            logger.error(f"Error in handle_confirmation: {e}", exc_info=True)
+            bot.answer_callback_query(call.id, MESSAGES['error'])
+    
+    def handle_delete_callback(call: types.CallbackQuery):
+        """Handle delete callback."""
+        try:
+            birthday_id = int(call.data.split('_')[1])
+            user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
+            
+            if BirthdayDB.delete(birthday_id, user_id):
+                bot.answer_callback_query(call.id)
+                bot.edit_message_text(
+                    '✅ <b>День рождения успешно удален!</b>',
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.id,
+                    parse_mode='HTML'
+                )
+            else:
+                bot.answer_callback_query(call.id, '❌ Ошибка при удалении')
+                
+        except Exception as e:
+            logger.error(f"Error in handle_delete: {e}")
+            bot.answer_callback_query(call.id, MESSAGES['error'])
+    
+    def handle_cancel_callback(call: types.CallbackQuery):
+        """Handle cancel callback."""
+        try:
+            user_states.pop(call.message.chat.id, None)
+            user_data.pop(call.message.chat.id, None)
+            
+            bot.answer_callback_query(call.id)
+            bot.edit_message_text(
+                MESSAGES['cancel'],
+                chat_id=call.message.chat.id,
+                message_id=call.message.id
+            )
+        except Exception as e:
+            logger.error(f"Error in handle_cancel: {e}")
+            bot.answer_callback_query(call.id, MESSAGES['error'])
+    
     @bot.message_handler(commands=['add'])
     @rate_limit(seconds=2)
     def handle_add_command(message: types.Message):
@@ -229,7 +333,8 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             
             user_data[message.chat.id]['birth_date'] = birth_date
             user_data[message.chat.id]['birth_year'] = birth_year
-            logger.info(f"Saved date for user {message.chat.id}: {birth_date}")
+            logger.info(f"Saved date for user {message.chat.id}: {birth_date}, year: {birth_year}")
+            logger.info(f"Full user_data for {message.chat.id}: {user_data[message.chat.id]}")
             
             # Show confirmation
             name = user_data[message.chat.id]['name']
@@ -252,58 +357,8 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                 parse_mode='HTML'
             )
         except Exception as e:
-            logger.error(f"Error in get_date: {e}")
+            logger.error(f"Error in get_date: {e}", exc_info=True)
             bot.reply_to(message, MESSAGES['error'])
-    
-    @bot.callback_query_handler(func=lambda call: call.data in ['confirm_add', 'cancel_add'])
-    def handle_confirmation(call: types.CallbackQuery):
-        """Handle confirmation callback."""
-        try:
-            logger.info(f"Callback received: {call.data} from user {call.from_user.id}")
-            logger.info(f"User data: {user_data.get(call.message.chat.id, {})}")
-            
-            if call.data == 'confirm_add':
-                # Save to database
-                user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
-                data = user_data.get(call.message.chat.id, {})
-                
-                if not data:
-                    logger.error(f"No data found for user {call.message.chat.id}")
-                    bot.answer_callback_query(call.id, '❌ Ошибка: данные не найдены')
-                    return
-                
-                logger.info(f"Saving birthday for user {user_id}: {data}")
-                birthday_id = BirthdayDB.add(
-                    user_id=user_id,
-                    friend_name=data['name'],
-                    birth_date=data['birth_date'],
-                    birth_year=data.get('birth_year')
-                )
-                logger.info(f"Birthday saved with ID: {birthday_id}")
-                
-                bot.answer_callback_query(call.id)
-                bot.edit_message_text(
-                    '✅ <b>День рождения успешно добавлен!</b>',
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.id,
-                    parse_mode='HTML'
-                )
-            else:
-                bot.answer_callback_query(call.id)
-                bot.edit_message_text(
-                    MESSAGES['cancel'],
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.id
-                )
-            
-            # Clear state
-            user_states.pop(call.message.chat.id, None)
-            user_data.pop(call.message.chat.id, None)
-            logger.info(f"Cleared state for user {call.message.chat.id}")
-            
-        except Exception as e:
-            logger.error(f"Error in handle_confirmation: {e}", exc_info=True)
-            bot.answer_callback_query(call.id, MESSAGES['error'])
     
     @bot.message_handler(commands=['list'])
     @rate_limit(seconds=2)
@@ -319,42 +374,3 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     @rate_limit(seconds=2)
     def handle_delete_command(message: types.Message):
         cmd_delete(message)
-    
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
-    def handle_delete(call: types.CallbackQuery):
-        """Handle delete callback."""
-        try:
-            birthday_id = int(call.data.split('_')[1])
-            user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
-            
-            if BirthdayDB.delete(birthday_id, user_id):
-                bot.answer_callback_query(call.id)
-                bot.edit_message_text(
-                    '✅ <b>День рождения успешно удален!</b>',
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.id,
-                    parse_mode='HTML'
-                )
-            else:
-                bot.answer_callback_query(call.id, '❌ Ошибка при удалении')
-                
-        except Exception as e:
-            logger.error(f"Error in handle_delete: {e}")
-            bot.answer_callback_query(call.id, MESSAGES['error'])
-    
-    @bot.callback_query_handler(func=lambda call: call.data == 'cancel')
-    def handle_cancel(call: types.CallbackQuery):
-        """Handle cancel callback."""
-        try:
-            user_states.pop(call.message.chat.id, None)
-            user_data.pop(call.message.chat.id, None)
-            
-            bot.answer_callback_query(call.id)
-            bot.edit_message_text(
-                MESSAGES['cancel'],
-                chat_id=call.message.chat.id,
-                message_id=call.message.id
-            )
-        except Exception as e:
-            logger.error(f"Error in handle_cancel: {e}")
-            bot.answer_callback_query(call.id, MESSAGES['error'])
