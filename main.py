@@ -5,7 +5,7 @@ from bot import create_bot
 from database import init_db
 from handlers.commands import register_command_handlers
 from handlers.birthdays import register_birthday_handlers
-from utils.scheduler import start_scheduler
+from utils.scheduler import start_scheduler, stop_scheduler
 
 # Configure logging
 logging.basicConfig(
@@ -45,9 +45,15 @@ def main():
         bot.infinity_polling()
         
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("Bot stopped by user (Ctrl+C)")
+        # Gracefully stop scheduler
+        logger.info("Stopping scheduler...")
+        stop_scheduler()
+        logger.info("Shutdown complete")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
+        # Stop scheduler on error too
+        stop_scheduler()
         sys.exit(1)
 
 if __name__ == '__main__':
