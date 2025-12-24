@@ -16,6 +16,7 @@ def check_birthdays():
         logger.warning("Bot instance not set for scheduler")
         return
     
+    conn = None
     try:
         conn = get_connection()
         with conn.cursor(dictionary=True) as cursor:
@@ -65,10 +66,18 @@ def check_birthdays():
             for bd in all_birthdays:
                 try:
                     bd_date = bd['birth_date']
-                    this_year_bd = date(today.year, bd_date.month, bd_date.day)
+                    
+                    # Handle leap year edge case
+                    try:
+                        this_year_bd = date(today.year, bd_date.month, bd_date.day)
+                    except ValueError:
+                        this_year_bd = date(today.year, bd_date.month, 28)
                     
                     if this_year_bd < today:
-                        this_year_bd = date(today.year + 1, bd_date.month, bd_date.day)
+                        try:
+                            this_year_bd = date(today.year + 1, bd_date.month, bd_date.day)
+                        except ValueError:
+                            this_year_bd = date(today.year + 1, bd_date.month, 28)
                     
                     days_until = (this_year_bd - today).days
                     
@@ -86,10 +95,11 @@ def check_birthdays():
                 except Exception as e:
                     logger.error(f"Error sending reminder: {e}")
         
-        conn.close()
-        
     except Exception as e:
-        logger.error(f"Error in check_birthdays: {e}")
+        logger.error(f"Critical error in check_birthdays: {e}", exc_info=True)
+    finally:
+        if conn:
+            conn.close()
 
 def start_scheduler(bot):
     """Start the background scheduler."""
@@ -109,3 +119,11 @@ def start_scheduler(bot):
     
     scheduler.start()
     logger.info(f"Scheduler started. Will check birthdays daily at {NOTIFICATION_TIME['hour']}:{NOTIFICATION_TIME['minute']:02d}")
+
+def stop_scheduler():
+    """Stop the scheduler gracefully."""
+    global scheduler
+    
+    if scheduler and scheduler.running:
+        scheduler.shutdown(wait=True)
+        logger.info("Scheduler stopped gracefully")
