@@ -12,6 +12,13 @@ logger = logging.getLogger(__name__)
 def register_command_handlers(bot: telebot.TeleBot):
     """Register all command handlers."""
     
+    # TEST: Simple callback handler
+    @bot.callback_query_handler(func=lambda call: True)
+    def test_callback(call: types.CallbackQuery):
+        """TEST: Catch all callbacks."""
+        logger.error(f"!!!! TEST CALLBACK RECEIVED: {call.data} !!!!")
+        bot.answer_callback_query(call.id, f"Test: {call.data}")
+    
     @bot.message_handler(commands=['start'])
     @rate_limit(seconds=3)
     def cmd_start(message: types.Message):
@@ -47,3 +54,11 @@ def register_command_handlers(bot: telebot.TeleBot):
         except Exception as e:
             logger.error(f"Error in cmd_help: {e}")
             bot.reply_to(message, MESSAGES['error'])
+    
+    @bot.message_handler(commands=['test'])
+    def cmd_test(message: types.Message):
+        """TEST: Send message with inline button."""
+        markup = types.InlineKeyboardMarkup()
+        btn = types.InlineKeyboardButton('👍 TEST BUTTON', callback_data='test_button')
+        markup.add(btn)
+        bot.send_message(message.chat.id, 'Click the button:', reply_markup=markup)
