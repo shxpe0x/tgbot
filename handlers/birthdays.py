@@ -18,24 +18,160 @@ logger = logging.getLogger(__name__)
 user_states = {}
 user_data = {}
 
+# Store bot instance
+_bot = None
+
+def _get_bot():
+    """Get bot instance."""
+    return _bot
+
+def cmd_add(message: types.Message):
+    """Start adding birthday process."""
+    bot = _get_bot()
+    try:
+        user_states[message.chat.id] = 'waiting_name'
+        bot.send_message(
+            message.chat.id,
+            '👤 <b>Введи имя друга:</b>',
+            reply_markup=get_cancel_keyboard(),
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logger.error(f"Error in cmd_add: {e}")
+        bot.reply_to(message, MESSAGES['error'])
+
+def cmd_list(message: types.Message):
+    """Show all birthdays."""
+    bot = _get_bot()
+    try:
+        user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
+        birthdays = BirthdayDB.get_all(user_id)
+        
+        if not birthdays:
+            bot.send_message(
+                message.chat.id,
+                '📅 <b>У тебя еще нет сохраненных дней рождения.</b>\n\nИспользуй /add чтобы добавить первый!',
+                parse_mode='HTML'
+            )
+            return
+        
+        text = '🎉 <b>Список дней рождения:</b>\n\n'
+        
+        for bd in birthdays:
+            date_obj = bd['birth_date']
+            date_str = date_obj.strftime('%d.%m')
+            
+            text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
+            
+            if bd['birth_year']:
+                age = datetime.now().year - bd['birth_year']
+                text += f' ({age} лет)'
+            
+            text += '\n'
+        
+        bot.send_message(message.chat.id, text, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Error in cmd_list: {e}")
+        bot.reply_to(message, MESSAGES['error'])
+
+def cmd_upcoming(message: types.Message):
+    """Show upcoming birthdays."""
+    bot = _get_bot()
+    try:
+        user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
+        birthdays = BirthdayDB.get_upcoming(user_id, days=30)
+        
+        if not birthdays:
+            bot.send_message(
+                message.chat.id,
+                '📅 <b>В ближайшие 30 дней нет дней рождения.</b>',
+                parse_mode='HTML'
+            )
+            return
+        
+        text = '🔔 <b>Ближайшие дни рождения:</b>\n\n'
+        
+        for bd in birthdays:
+            date_obj = bd['birth_date']
+            date_str = date_obj.strftime('%d.%m')
+            
+            # Calculate days until birthday
+            today = datetime.now().date()
+            this_year_bd = date(today.year, date_obj.month, date_obj.day)
+            if this_year_bd < today:
+                this_year_bd = date(today.year + 1, date_obj.month, date_obj.day)
+            days_left = (this_year_bd - today).days
+            
+            text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
+            
+            if days_left == 0:
+                text += ' 🎉 <b>СЕГОДНЯ!</b>'
+            elif days_left == 1:
+                text += ' (завтра)'
+            else:
+                text += f' (через {days_left} дн.)'
+            
+            text += '\n'
+        
+        bot.send_message(message.chat.id, text, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Error in cmd_upcoming: {e}")
+        bot.reply_to(message, MESSAGES['error'])
+
+def cmd_delete(message: types.Message):
+    """Start delete process."""
+    bot = _get_bot()
+    try:
+        user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
+        birthdays = BirthdayDB.get_all(user_id)
+        
+        if not birthdays:
+            bot.send_message(
+                message.chat.id,
+                '📅 <b>У тебя нет сохраненных дней рождения.</b>',
+                parse_mode='HTML'
+            )
+            return
+        
+        bot.send_message(
+            message.chat.id,
+            '🗑️ <b>Выбери день рождения для удаления:</b>',
+            reply_markup=get_delete_keyboard(birthdays),
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in cmd_delete: {e}")
+        bot.reply_to(message, MESSAGES['error'])
+
 def register_birthday_handlers(bot: telebot.TeleBot):
     """Register all birthday handlers."""
+    global _bot
+    _bot = bot
     
     @bot.message_handler(commands=['add'])
     @rate_limit(seconds=2)
-    def cmd_add(message: types.Message):
-        """Start adding birthday process."""
-        try:
-            user_states[message.chat.id] = 'waiting_name'
-            bot.send_message(
-                message.chat.id,
-                '👤 <b>Введи имя друга:</b>',
-                reply_markup=get_cancel_keyboard(),
-                parse_mode='HTML'
-            )
-        except Exception as e:
-            logger.error(f"Error in cmd_add: {e}")
-            bot.reply_to(message, MESSAGES['error'])
+    def handle_add_command(message: types.Message):
+        cmd_add(message)
+    
+    # Text button handlers - must come BEFORE state handlers
+    @bot.message_handler(func=lambda m: m.text in ['➕ Добавить ДР', '📋 Список', '🔔 Ближайшие', '🗑️ Удалить'])
+    def handle_menu_buttons(message: types.Message):
+        """Handle reply keyboard button presses."""
+        # Skip if in state (to avoid conflicts)
+        if message.chat.id in user_states:
+            return
+            
+        if message.text == '➕ Добавить ДР':
+            cmd_add(message)
+        elif message.text == '📋 Список':
+            cmd_list(message)
+        elif message.text == '🔔 Ближайшие':
+            cmd_upcoming(message)
+        elif message.text == '🗑️ Удалить':
+            cmd_delete(message)
     
     @bot.message_handler(func=lambda m: user_states.get(m.chat.id) == 'waiting_name')
     def get_name(message: types.Message):
@@ -158,112 +294,18 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     
     @bot.message_handler(commands=['list'])
     @rate_limit(seconds=2)
-    def cmd_list(message: types.Message):
-        """Show all birthdays."""
-        try:
-            user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
-            birthdays = BirthdayDB.get_all(user_id)
-            
-            if not birthdays:
-                bot.send_message(
-                    message.chat.id,
-                    '📅 <b>У тебя еще нет сохраненных дней рождения.</b>\n\nИспользуй /add чтобы добавить первый!',
-                    parse_mode='HTML'
-                )
-                return
-            
-            text = '🎉 <b>Список дней рождения:</b>\n\n'
-            
-            for bd in birthdays:
-                date_obj = bd['birth_date']
-                date_str = date_obj.strftime('%d.%m')
-                
-                text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
-                
-                if bd['birth_year']:
-                    age = datetime.now().year - bd['birth_year']
-                    text += f' ({age} лет)'
-                
-                text += '\n'
-            
-            bot.send_message(message.chat.id, text, parse_mode='HTML')
-            
-        except Exception as e:
-            logger.error(f"Error in cmd_list: {e}")
-            bot.reply_to(message, MESSAGES['error'])
+    def handle_list_command(message: types.Message):
+        cmd_list(message)
     
     @bot.message_handler(commands=['upcoming'])
     @rate_limit(seconds=2)
-    def cmd_upcoming(message: types.Message):
-        """Show upcoming birthdays."""
-        try:
-            user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
-            birthdays = BirthdayDB.get_upcoming(user_id, days=30)
-            
-            if not birthdays:
-                bot.send_message(
-                    message.chat.id,
-                    '📅 <b>В ближайшие 30 дней нет дней рождения.</b>',
-                    parse_mode='HTML'
-                )
-                return
-            
-            text = '🔔 <b>Ближайшие дни рождения:</b>\n\n'
-            
-            for bd in birthdays:
-                date_obj = bd['birth_date']
-                date_str = date_obj.strftime('%d.%m')
-                
-                # Calculate days until birthday
-                today = datetime.now().date()
-                this_year_bd = date(today.year, date_obj.month, date_obj.day)
-                if this_year_bd < today:
-                    this_year_bd = date(today.year + 1, date_obj.month, date_obj.day)
-                days_left = (this_year_bd - today).days
-                
-                text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
-                
-                if days_left == 0:
-                    text += ' 🎉 <b>СЕГОДНЯ!</b>'
-                elif days_left == 1:
-                    text += ' (завтра)'
-                else:
-                    text += f' (через {days_left} дн.)'
-                
-                text += '\n'
-            
-            bot.send_message(message.chat.id, text, parse_mode='HTML')
-            
-        except Exception as e:
-            logger.error(f"Error in cmd_upcoming: {e}")
-            bot.reply_to(message, MESSAGES['error'])
+    def handle_upcoming_command(message: types.Message):
+        cmd_upcoming(message)
     
     @bot.message_handler(commands=['delete'])
     @rate_limit(seconds=2)
-    def cmd_delete(message: types.Message):
-        """Start delete process."""
-        try:
-            user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
-            birthdays = BirthdayDB.get_all(user_id)
-            
-            if not birthdays:
-                bot.send_message(
-                    message.chat.id,
-                    '📅 <b>У тебя нет сохраненных дней рождения.</b>',
-                    parse_mode='HTML'
-                )
-                return
-            
-            bot.send_message(
-                message.chat.id,
-                '🗑️ <b>Выбери день рождения для удаления:</b>',
-                reply_markup=get_delete_keyboard(birthdays),
-                parse_mode='HTML'
-            )
-            
-        except Exception as e:
-            logger.error(f"Error in cmd_delete: {e}")
-            bot.reply_to(message, MESSAGES['error'])
+    def handle_delete_command(message: types.Message):
+        cmd_delete(message)
     
     @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
     def handle_delete(call: types.CallbackQuery):
