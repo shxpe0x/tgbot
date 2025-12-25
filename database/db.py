@@ -1,7 +1,8 @@
 """Database connection and initialization."""
 import mysql.connector
-from mysql.connector import pooling
+from mysql.connector import pooling, Error
 import logging
+import time
 from config import DB_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -10,27 +11,58 @@ logger = logging.getLogger(__name__)
 connection_pool = None
 
 def create_pool():
-    """Create MySQL connection pool."""
+    """Create MySQL connection pool with proper configuration."""
     global connection_pool
     try:
         connection_pool = pooling.MySQLConnectionPool(
             pool_name="bot_pool",
             pool_size=DB_CONFIG['pool_size'],
+            pool_reset_session=True,  # Reset session state on connection reuse
             host=DB_CONFIG['host'],
             user=DB_CONFIG['user'],
             password=DB_CONFIG['password'],
-            database=DB_CONFIG['database']
+            database=DB_CONFIG['database'],
+            # Timeouts
+            connection_timeout=10,  # 10 seconds to establish connection
+            autocommit=False,  # Explicit transaction control
+            get_warnings=True,  # Get SQL warnings
+            # Keepalive
+            use_pure=False  # Use C extension for better performance
         )
         logger.info("Database connection pool created successfully")
-    except mysql.connector.Error as e:
+    except Error as e:
         logger.error(f"Error creating connection pool: {e}")
         raise
 
-def get_connection():
-    """Get connection from pool."""
+def get_connection(max_retries=3, retry_delay=1):
+    """Get connection from pool with retry logic.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries in seconds
+    
+    Returns:
+        Database connection
+    
+    Raises:
+        mysql.connector.Error: If unable to get connection after retries
+    """
     if connection_pool is None:
         create_pool()
-    return connection_pool.get_connection()
+    
+    for attempt in range(max_retries):
+        try:
+            conn = connection_pool.get_connection()
+            # Test connection
+            conn.ping(reconnect=True, attempts=1, delay=0)
+            return conn
+        except Error as e:
+            logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to get connection after {max_retries} attempts")
+                raise
 
 def init_db():
     """Initialize database tables."""
@@ -66,7 +98,7 @@ def init_db():
             
             conn.commit()
             logger.info("Database tables initialized successfully")
-    except mysql.connector.Error as e:
+    except Error as e:
         logger.error(f"Error initializing database: {e}")
         conn.rollback()
         raise
