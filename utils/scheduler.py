@@ -4,6 +4,8 @@ from datetime import datetime, date
 from apscheduler.schedulers.background import BackgroundScheduler
 from database.db import get_connection
 from config import NOTIFICATION_TIME
+from utils.date_helpers import calculate_age, days_until_birthday
+from utils.rate_limiter import clear_old_records
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +21,12 @@ def check_birthdays():
     conn = None
     try:
         conn = get_connection()
+        today = date.today()
+        
         with conn.cursor(dictionary=True) as cursor:
             # Get all birthdays that match today
-            today = datetime.now().date()
-            
             cursor.execute('''
-                SELECT b.id, b.friend_name, b.birth_year, u.telegram_id
+                SELECT b.id, b.friend_name, b.birth_year, b.birth_date, u.telegram_id
                 FROM birthdays b
                 JOIN users u ON b.user_id = u.id
                 WHERE MONTH(b.birth_date) = %s AND DAY(b.birth_date) = %s
@@ -39,7 +41,7 @@ def check_birthdays():
                     message += f"🎂 <b>{bd['friend_name']}</b>"
                     
                     if bd['birth_year']:
-                        age = today.year - bd['birth_year']
+                        age = calculate_age(bd['birth_year'], bd['birth_date'], today)
                         message += f" исполняется <b>{age} лет</b>!"
                     
                     message += "\n\nНе забудь поздравить! 🎁"
@@ -53,38 +55,38 @@ def check_birthdays():
                 except Exception as e:
                     logger.error(f"Error sending notification to {bd['telegram_id']}: {e}")
             
-            # Get birthdays coming up (based on remind_days_before)
+            # Get birthdays for upcoming reminders (excluding today to avoid duplicates)
             cursor.execute('''
                 SELECT b.id, b.friend_name, b.birth_date, b.remind_days_before, u.telegram_id
                 FROM birthdays b
                 JOIN users u ON b.user_id = u.id
                 WHERE b.remind_days_before > 0
-            ''')
+                AND NOT (MONTH(b.birth_date) = %s AND DAY(b.birth_date) = %s)
+            ''', (today.month, today.day))
             
-            all_birthdays = cursor.fetchall()
+            upcoming_birthdays = cursor.fetchall()
             
-            for bd in all_birthdays:
+            for bd in upcoming_birthdays:
                 try:
-                    bd_date = bd['birth_date']
+                    days_until = days_until_birthday(bd['birth_date'], today)
                     
-                    # Handle leap year edge case
-                    try:
-                        this_year_bd = date(today.year, bd_date.month, bd_date.day)
-                    except ValueError:
-                        this_year_bd = date(today.year, bd_date.month, 28)
-                    
-                    if this_year_bd < today:
+                    # Send reminder only if days match AND it's not today (already handled above)
+                    if days_until == bd['remind_days_before'] and days_until > 0:
+                        # Calculate the actual date for display
                         try:
-                            this_year_bd = date(today.year + 1, bd_date.month, bd_date.day)
+                            future_date = date(today.year, bd['birth_date'].month, bd['birth_date'].day)
                         except ValueError:
-                            this_year_bd = date(today.year + 1, bd_date.month, 28)
-                    
-                    days_until = (this_year_bd - today).days
-                    
-                    if days_until == bd['remind_days_before']:
+                            future_date = date(today.year, bd['birth_date'].month, 28)
+                        
+                        if future_date < today:
+                            try:
+                                future_date = date(today.year + 1, bd['birth_date'].month, bd['birth_date'].day)
+                            except ValueError:
+                                future_date = date(today.year + 1, bd['birth_date'].month, 28)
+                        
                         message = f"🔔 <b>Напоминание!</b>\n\n"
                         message += f"Через {days_until} дн. день рождения у <b>{bd['friend_name']}</b>\n"
-                        message += f"📅 {this_year_bd.strftime('%d.%m')}"
+                        message += f"📅 {future_date.strftime('%d.%m')}"
                         
                         bot_instance.send_message(
                             bd['telegram_id'],
@@ -101,6 +103,14 @@ def check_birthdays():
         if conn:
             conn.close()
 
+def cleanup_rate_limiter():
+    """Periodic cleanup of rate limiter records."""
+    try:
+        clear_old_records(max_age_seconds=3600)
+        logger.info("Rate limiter cleanup completed")
+    except Exception as e:
+        logger.error(f"Error in rate limiter cleanup: {e}")
+
 def start_scheduler(bot):
     """Start the background scheduler."""
     global scheduler, bot_instance
@@ -108,13 +118,21 @@ def start_scheduler(bot):
     bot_instance = bot
     scheduler = BackgroundScheduler()
     
-    # Schedule daily check
+    # Schedule daily birthday check
     scheduler.add_job(
         check_birthdays,
         'cron',
         hour=NOTIFICATION_TIME['hour'],
         minute=NOTIFICATION_TIME['minute'],
         id='birthday_check'
+    )
+    
+    # Schedule hourly rate limiter cleanup
+    scheduler.add_job(
+        cleanup_rate_limiter,
+        'interval',
+        hours=1,
+        id='rate_limiter_cleanup'
     )
     
     scheduler.start()
