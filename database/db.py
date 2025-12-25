@@ -34,6 +34,18 @@ def create_pool():
         logger.error(f"Error creating connection pool: {e}")
         raise
 
+def reset_pool():
+    """Reset connection pool (useful after DB reconnection)."""
+    global connection_pool
+    if connection_pool:
+        try:
+            # Close all connections in pool
+            connection_pool._remove_connections()
+        except:
+            pass
+        connection_pool = None
+    create_pool()
+
 def get_connection(max_retries=3, retry_delay=1):
     """Get connection from pool with retry logic.
     
@@ -60,14 +72,21 @@ def get_connection(max_retries=3, retry_delay=1):
             logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
+                # Try to reset pool on connection errors
+                if attempt == 1:
+                    try:
+                        reset_pool()
+                    except:
+                        pass
             else:
                 logger.error(f"Failed to get connection after {max_retries} attempts")
                 raise
 
 def init_db():
     """Initialize database tables."""
-    conn = get_connection()
+    conn = None
     try:
+        conn = get_connection()
         with conn.cursor() as cursor:
             # Users table
             cursor.execute('''
@@ -92,7 +111,19 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                     INDEX idx_user_id (user_id),
-                    INDEX idx_birth_date (birth_date)
+                    INDEX idx_birth_date (birth_date),
+                    INDEX idx_reminders (birth_date, remind_days_before)
+                )
+            ''')
+            
+            # User states table for persistent state management
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_states (
+                    telegram_id BIGINT PRIMARY KEY,
+                    state VARCHAR(50),
+                    data TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_updated (updated_at)
                 )
             ''')
             
@@ -100,7 +131,9 @@ def init_db():
             logger.info("Database tables initialized successfully")
     except Error as e:
         logger.error(f"Error initializing database: {e}")
-        conn.rollback()
+        if conn:
+            conn.rollback()
         raise
     finally:
-        conn.close()
+        if conn:
+            conn.close()
