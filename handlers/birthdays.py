@@ -7,12 +7,16 @@ from database.models import UserDB, BirthdayDB
 from keyboards.reply_keyboards import get_main_menu, get_cancel_keyboard
 from config import MESSAGES
 from utils.rate_limiter import rate_limit
+from utils.date_helpers import calculate_age, days_until_birthday
 
 logger = logging.getLogger(__name__)
 
 # User states
 user_states = {}
 user_data = {}
+
+# Constants
+MAX_NAME_LENGTH = 100
 
 def register_birthday_handlers(bot: telebot.TeleBot):
     """Register all birthday handlers."""
@@ -35,18 +39,33 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     
     # ==================== TEXT BUTTON HANDLERS ====================
     
+    @bot.message_handler(func=lambda m: m.text == '❌ Отмена')
+    def btn_cancel(message):
+        """Cancel button - should work regardless of state."""
+        logger.info(f"CANCEL clicked by {message.from_user.id}")
+        user_states.pop(message.chat.id, None)
+        user_data.pop(message.chat.id, None)
+        
+        bot.send_message(
+            message.chat.id,
+            '❌ Отменено',
+            reply_markup=get_main_menu()
+        )
+    
     @bot.message_handler(func=lambda m: m.text == '➕ Добавить')
     @rate_limit(seconds=2)
     def btn_add(message):
         """Add birthday button."""
         logger.info(f"Button ADD clicked by {message.from_user.id}")
-        if message.chat.id in user_states:
-            return
+        
+        # Clear any previous state
+        user_states.pop(message.chat.id, None)
+        user_data.pop(message.chat.id, None)
         
         user_states[message.chat.id] = 'waiting_name'
         bot.send_message(
             message.chat.id,
-            '👤 <b>Введи имя друга:</b>',
+            '👤 <b>Введи имя друга:</b>\n\n<i>Максимум 100 символов</i>',
             reply_markup=get_cancel_keyboard(),
             parse_mode='HTML'
         )
@@ -56,8 +75,6 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     def btn_list(message):
         """List birthdays button."""
         logger.info(f"Button LIST clicked by {message.from_user.id}")
-        if message.chat.id in user_states:
-            return
         
         try:
             user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
@@ -72,12 +89,16 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                 return
             
             text = '🎉 <b>Список дней рождения:</b>\n\n'
+            today = date.today()
+            
             for bd in birthdays:
                 date_str = bd['birth_date'].strftime('%d.%m')
                 text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
+                
                 if bd['birth_year']:
-                    age = datetime.now().year - bd['birth_year']
+                    age = calculate_age(bd['birth_year'], bd['birth_date'], today)
                     text += f' ({age} лет)'
+                
                 text += '\n'
             
             bot.send_message(message.chat.id, text, parse_mode='HTML')
@@ -90,8 +111,6 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     def btn_upcoming(message):
         """Upcoming birthdays button."""
         logger.info(f"Button UPCOMING clicked by {message.from_user.id}")
-        if message.chat.id in user_states:
-            return
         
         try:
             user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
@@ -106,31 +125,21 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                 return
             
             text = '🔔 <b>Ближайшие дни рождения:</b>\n\n'
+            today = date.today()
+            
             for bd in birthdays:
                 date_str = bd['birth_date'].strftime('%d.%m')
-                today = datetime.now().date()
-                
-                try:
-                    this_year_bd = date(today.year, bd['birth_date'].month, bd['birth_date'].day)
-                except ValueError:
-                    # Leap year edge case
-                    this_year_bd = date(today.year, bd['birth_date'].month, 28)
-                
-                if this_year_bd < today:
-                    try:
-                        this_year_bd = date(today.year + 1, bd['birth_date'].month, bd['birth_date'].day)
-                    except ValueError:
-                        this_year_bd = date(today.year + 1, bd['birth_date'].month, 28)
-                
-                days_left = (this_year_bd - today).days
+                days_left = days_until_birthday(bd['birth_date'], today)
                 
                 text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
+                
                 if days_left == 0:
                     text += ' 🎉 <b>СЕГОДНЯ!</b>'
                 elif days_left == 1:
                     text += ' (завтра)'
                 else:
                     text += f' (через {days_left} дн.)'
+                
                 text += '\n'
             
             bot.send_message(message.chat.id, text, parse_mode='HTML')
@@ -143,8 +152,6 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     def btn_delete(message):
         """Delete birthday button."""
         logger.info(f"Button DELETE clicked by {message.from_user.id}")
-        if message.chat.id in user_states:
-            return
         
         try:
             user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
@@ -176,26 +183,34 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             logger.error(f"Error in btn_delete: {e}")
             bot.reply_to(message, MESSAGES['error'])
     
-    @bot.message_handler(func=lambda m: m.text == '❌ Отмена')
-    def btn_cancel(message):
-        """Cancel button."""
-        logger.info(f"CANCEL clicked by {message.from_user.id}")
-        user_states.pop(message.chat.id, None)
-        user_data.pop(message.chat.id, None)
-        
-        bot.send_message(
-            message.chat.id,
-            '❌ Отменено',
-            reply_markup=get_main_menu()
-        )
-    
     # ==================== STATE HANDLERS ====================
     
     @bot.message_handler(func=lambda m: user_states.get(m.chat.id) == 'waiting_name')
     def state_waiting_name(message):
-        """Get name."""
-        logger.info(f"Got name: {message.text}")
-        user_data[message.chat.id] = {'name': message.text}
+        """Get name with validation."""
+        name = message.text.strip()
+        
+        # Validate name length
+        if len(name) > MAX_NAME_LENGTH:
+            bot.send_message(
+                message.chat.id,
+                f'❌ Слишком длинное имя! Максимум {MAX_NAME_LENGTH} символов.\n'
+                f'Твоё имя: {len(name)} символов.',
+                reply_markup=get_cancel_keyboard(),
+                parse_mode='HTML'
+            )
+            return
+        
+        if len(name) < 1:
+            bot.send_message(
+                message.chat.id,
+                '❌ Имя не может быть пустым!',
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+        
+        logger.info(f"Got name: {name}")
+        user_data[message.chat.id] = {'name': name}
         user_states[message.chat.id] = 'waiting_date'
         
         bot.send_message(
@@ -224,6 +239,17 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                         if fmt == '%d.%m.%Y':
                             birth_year = parsed.year
                             birth_date = date(parsed.year, parsed.month, parsed.day)
+                            
+                            # Validate year is reasonable
+                            current_year = datetime.now().year
+                            if birth_year < 1900 or birth_year > current_year:
+                                bot.send_message(
+                                    message.chat.id,
+                                    f'❌ Неверный год! Год должен быть между 1900 и {current_year}.',
+                                    reply_markup=get_cancel_keyboard(),
+                                    parse_mode='HTML'
+                                )
+                                return
                         else:
                             # For dates without year, check if it's valid
                             birth_date = date(datetime.now().year, parsed.month, parsed.day)
@@ -315,3 +341,16 @@ def register_birthday_handlers(bot: telebot.TeleBot):
         except Exception as e:
             logger.error(f"Error in state_waiting_delete: {e}")
             bot.send_message(message.chat.id, '❌ Ошибка')
+    
+    # ==================== FALLBACK HANDLER ====================
+    
+    @bot.message_handler(func=lambda m: True)
+    def fallback_handler(message):
+        """Handle unknown messages."""
+        # Only respond if user is not in any state
+        if message.chat.id not in user_states:
+            bot.send_message(
+                message.chat.id,
+                'ℹ️ Не понимаю эту команду.\n\nИспользуй кнопки меню или /help для справки.',
+                parse_mode='HTML'
+            )
