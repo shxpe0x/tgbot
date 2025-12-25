@@ -2,6 +2,7 @@
 import logging
 from datetime import datetime, date
 from .db import get_connection
+from utils.date_helpers import days_until_birthday
 
 logger = logging.getLogger(__name__)
 
@@ -120,37 +121,18 @@ class BirthdayDB:
                 )
                 all_birthdays = cursor.fetchall()
                 
-                # Filter in Python for better readability
-                today = datetime.now().date()
+                # Filter using date_helpers for consistency
+                today = date.today()
                 upcoming = []
                 
                 for bd in all_birthdays:
-                    bd_date = bd['birth_date']
-                    try:
-                        # Create birthday date for this year
-                        this_year_bd = date(today.year, bd_date.month, bd_date.day)
-                    except ValueError:
-                        # Handle leap year edge case (29 Feb)
-                        this_year_bd = date(today.year, bd_date.month, 28)
-                    
-                    # If birthday already passed this year, check next year
-                    if this_year_bd < today:
-                        try:
-                            this_year_bd = date(today.year + 1, bd_date.month, bd_date.day)
-                        except ValueError:
-                            this_year_bd = date(today.year + 1, bd_date.month, 28)
-                    
-                    days_until = (this_year_bd - today).days
+                    days_until = days_until_birthday(bd['birth_date'], today)
                     
                     if 0 <= days_until <= days:
                         upcoming.append(bd)
                 
                 # Sort by days until birthday
-                upcoming.sort(key=lambda x: (
-                    (date(today.year, x['birth_date'].month, x['birth_date'].day) 
-                     if date(today.year, x['birth_date'].month, x['birth_date'].day) >= today
-                     else date(today.year + 1, x['birth_date'].month, x['birth_date'].day)) - today
-                ).days)
+                upcoming.sort(key=lambda x: days_until_birthday(x['birth_date'], today))
                 
                 return upcoming
         except Exception as e:
