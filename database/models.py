@@ -1,28 +1,37 @@
 """Database models for users and birthdays."""
 import logging
+import html
 from datetime import datetime, date
+from mysql.connector import Error
 from .db import get_connection
 from utils.date_helpers import days_until_birthday
 
 logger = logging.getLogger(__name__)
+
+# Constants
+MAX_BIRTHDAYS_PER_USER = 500  # Limit to prevent abuse
 
 class UserDB:
     """User database operations."""
     
     @staticmethod
     def create_or_get(telegram_id: int, username: str = None) -> int:
-        """Create user or get existing user ID."""
-        conn = get_connection()
+        """Create user or get existing user ID with transaction safety."""
+        conn = None
         try:
+            conn = get_connection()
+            conn.start_transaction()
+            
             with conn.cursor(dictionary=True) as cursor:
-                # Check if user exists
+                # Try to get existing user with FOR UPDATE lock
                 cursor.execute(
-                    "SELECT id FROM users WHERE telegram_id = %s",
+                    "SELECT id FROM users WHERE telegram_id = %s FOR UPDATE",
                     (telegram_id,)
                 )
                 result = cursor.fetchone()
                 
                 if result:
+                    conn.commit()
                     return result['id']
                 
                 # Create new user
@@ -30,14 +39,17 @@ class UserDB:
                     "INSERT INTO users (telegram_id, username) VALUES (%s, %s)",
                     (telegram_id, username)
                 )
+                user_id = cursor.lastrowid
                 conn.commit()
-                return cursor.lastrowid
-        except Exception as e:
+                logger.info(f"Created new user: {telegram_id}")
+                return user_id
+                
+        except Error as e:
             logger.error(f"Error in create_or_get user: {e}")
-            conn.rollback()
+            if conn:
+                conn.rollback()
             raise
         finally:
-            # Return connection to pool
             if conn:
                 conn.close()
 
@@ -47,21 +59,43 @@ class BirthdayDB:
     @staticmethod
     def add(user_id: int, friend_name: str, birth_date: date, 
             birth_year: int = None, remind_days: int = 1) -> int:
-        """Add new birthday."""
-        conn = get_connection()
+        """Add new birthday with validation and limits."""
+        conn = None
         try:
+            # Sanitize friend name
+            friend_name = html.escape(friend_name.strip())
+            
+            conn = get_connection()
+            
             with conn.cursor() as cursor:
+                # Check birthday count limit
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM birthdays WHERE user_id = %s",
+                    (user_id,)
+                )
+                result = cursor.fetchone()
+                
+                if result[0] >= MAX_BIRTHDAYS_PER_USER:
+                    raise ValueError(f"Birthday limit reached ({MAX_BIRTHDAYS_PER_USER} max)")
+                
+                # Add birthday
                 cursor.execute(
                     '''INSERT INTO birthdays 
                        (user_id, friend_name, birth_date, birth_year, remind_days_before)
                        VALUES (%s, %s, %s, %s, %s)''',
                     (user_id, friend_name, birth_date, birth_year, remind_days)
                 )
+                birthday_id = cursor.lastrowid
                 conn.commit()
-                return cursor.lastrowid
+                logger.info(f"Added birthday {birthday_id} for user {user_id}")
+                return birthday_id
+                
+        except ValueError:
+            raise  # Re-raise validation errors
         except Exception as e:
             logger.error(f"Error adding birthday: {e}")
-            conn.rollback()
+            if conn:
+                conn.rollback()
             raise
         finally:
             if conn:
@@ -70,8 +104,9 @@ class BirthdayDB:
     @staticmethod
     def get_all(user_id: int) -> list:
         """Get all birthdays for a user."""
-        conn = get_connection()
+        conn = None
         try:
+            conn = get_connection()
             with conn.cursor(dictionary=True) as cursor:
                 cursor.execute(
                     '''SELECT id, friend_name, birth_date, birth_year, remind_days_before
@@ -90,18 +125,23 @@ class BirthdayDB:
     @staticmethod
     def delete(birthday_id: int, user_id: int) -> bool:
         """Delete birthday by ID."""
-        conn = get_connection()
+        conn = None
         try:
+            conn = get_connection()
             with conn.cursor() as cursor:
                 cursor.execute(
                     "DELETE FROM birthdays WHERE id = %s AND user_id = %s",
                     (birthday_id, user_id)
                 )
                 conn.commit()
-                return cursor.rowcount > 0
+                deleted = cursor.rowcount > 0
+                if deleted:
+                    logger.info(f"Deleted birthday {birthday_id} for user {user_id}")
+                return deleted
         except Exception as e:
             logger.error(f"Error deleting birthday: {e}")
-            conn.rollback()
+            if conn:
+                conn.rollback()
             raise
         finally:
             if conn:
@@ -110,8 +150,9 @@ class BirthdayDB:
     @staticmethod
     def get_upcoming(user_id: int, days: int = 30) -> list:
         """Get upcoming birthdays within specified days."""
-        conn = get_connection()
+        conn = None
         try:
+            conn = get_connection()
             with conn.cursor(dictionary=True) as cursor:
                 # Get all birthdays for user
                 cursor.execute(
