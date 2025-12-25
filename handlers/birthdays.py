@@ -3,11 +3,12 @@ import telebot
 from telebot import types
 import logging
 from datetime import datetime, date
-from database.models import UserDB, BirthdayDB
+from database.models import UserDB, BirthdayDB, MAX_BIRTHDAYS_PER_USER
 from keyboards.reply_keyboards import get_main_menu, get_cancel_keyboard
 from config import MESSAGES
 from utils.rate_limiter import rate_limit
 from utils.date_helpers import calculate_age, days_until_birthday
+import html as html_module
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,24 @@ def register_birthday_handlers(bot: telebot.TeleBot):
         """Add birthday button."""
         logger.info(f"Button ADD clicked by {message.from_user.id}")
         
+        try:
+            # Check birthday limit before starting
+            user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
+            birthdays = BirthdayDB.get_all(user_id)
+            
+            if len(birthdays) >= MAX_BIRTHDAYS_PER_USER:
+                bot.send_message(
+                    message.chat.id,
+                    f'❌ <b>Достигнут лимит:</b> {MAX_BIRTHDAYS_PER_USER} дней рождения.\n\n'
+                    'Удали старые записи перед добавлением новых.',
+                    parse_mode='HTML'
+                )
+                return
+        except Exception as e:
+            logger.error(f"Error checking birthday limit: {e}")
+            bot.reply_to(message, MESSAGES['error'])
+            return
+        
         # Clear any previous state
         user_states.pop(message.chat.id, None)
         user_data.pop(message.chat.id, None)
@@ -93,6 +112,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             
             for bd in birthdays:
                 date_str = bd['birth_date'].strftime('%d.%m')
+                # Names are already escaped in DB
                 text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
                 
                 if bd['birth_year']:
@@ -222,7 +242,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     
     @bot.message_handler(func=lambda m: user_states.get(m.chat.id) == 'waiting_date')
     def state_waiting_date(message):
-        """Get date and save with validation."""
+        """Get date and save with improved validation."""
         logger.info(f"Got date: {message.text}")
         try:
             date_text = message.text.strip()
@@ -251,10 +271,20 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                                 )
                                 return
                         else:
-                            # For dates without year, check if it's valid
-                            birth_date = date(datetime.now().year, parsed.month, parsed.day)
-                    except ValueError as e:
-                        # Invalid date like 31.02 or 29.02 in non-leap year
+                            # For dates without year, use leap year for validation
+                            # This handles Feb 29 correctly
+                            try:
+                                birth_date = date(2000, parsed.month, parsed.day)
+                            except ValueError:
+                                bot.send_message(
+                                    message.chat.id,
+                                    f'❌ Неверная дата! Такой даты не существует.\nПример: <code>25.12.2000</code>',
+                                    reply_markup=get_cancel_keyboard(),
+                                    parse_mode='HTML'
+                                )
+                                return
+                    except ValueError:
+                        # Invalid date like 31.02 or 30.02
                         bot.send_message(
                             message.chat.id,
                             f'❌ Неверная дата! Такой даты не существует.\nПример: <code>25.12.2000</code>',
@@ -297,11 +327,26 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             date_str = birth_date.strftime('%d.%m.%Y') if birth_year else birth_date.strftime('%d.%m')
             bot.send_message(
                 message.chat.id,
-                f'✅ <b>Добавлено!</b>\n\n👤 {name}\n📅 {date_str}',
+                f'✅ <b>Добавлено!</b>\n\n👤 {html_module.escape(name)}\n📅 {date_str}',
                 reply_markup=get_main_menu(),
                 parse_mode='HTML'
             )
             
+        except ValueError as e:
+            logger.error(f"Validation error in state_waiting_date: {e}")
+            if 'Birthday limit reached' in str(e):
+                bot.send_message(
+                    message.chat.id,
+                    f'❌ <b>Достигнут лимит:</b> {MAX_BIRTHDAYS_PER_USER} дней рождения',
+                    reply_markup=get_main_menu(),
+                    parse_mode='HTML'
+                )
+            else:
+                bot.send_message(
+                    message.chat.id,
+                    '❌ Ошибка при сохранении',
+                    reply_markup=get_main_menu()
+                )
         except Exception as e:
             logger.error(f"Error in state_waiting_date: {e}", exc_info=True)
             bot.send_message(
