@@ -1,6 +1,3 @@
-# Environment variables
-.env
-
 # Python
 __pycache__/
 *.py[cod]
@@ -24,19 +21,25 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-PIPFILE.lock
 
-# Virtual Environment
+# Virtual environments
 venv/
-ENV/
 env/
+ENV/
+env.bak/
+venv.bak/
 
-# IDEs
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
+# Environment variables
+.env
+.env.local
+.env.*.local
 
 # Logs
 *.log
@@ -50,3 +53,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Project specific
+bot.log
