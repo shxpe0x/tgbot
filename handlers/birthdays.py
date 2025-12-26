@@ -55,13 +55,13 @@ def register_birthday_handlers(bot: telebot.TeleBot):
 
     @bot.message_handler(func=lambda m: m.text == 'С днем рождения')
     def btn_sdr(message):
-        """Cancel button - should work regardless of state."""
         logger.info(f"CANCEL clicked by {message.from_user.id}")
-        bot.send_message(
-            message.chat.id,
-            'С днем рождения',
-            reply_markup=get_main_menu()
-        )
+        bot.reply_to(
+        message,
+        'С днем рождения',
+        reply_markup=get_main_menu()
+    )
+
     
     @bot.message_handler(func=lambda m: m.text == '➕ Добавить')
     @rate_limit(seconds=2)
