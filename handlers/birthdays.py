@@ -52,6 +52,16 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             '❌ Отменено',
             reply_markup=get_main_menu()
         )
+
+    @bot.message_handler(func=lambda m: m.text == 'С днем рождения')
+    def btn_sdr(message):
+        """Cancel button - should work regardless of state."""
+        logger.info(f"CANCEL clicked by {message.from_user.id}")
+        bot.send_message(
+            message.chat.id,
+            'С днем рождения',
+            reply_markup=get_main_menu()
+        )
     
     @bot.message_handler(func=lambda m: m.text == '➕ Добавить')
     @rate_limit(seconds=2)
@@ -124,6 +134,47 @@ def register_birthday_handlers(bot: telebot.TeleBot):
             bot.send_message(message.chat.id, text, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Error in btn_list: {e}")
+            bot.reply_to(message, MESSAGES['error'])
+
+    @bot.message_handler(func=lambda m: m.text == 'С дне')
+    @rate_limit(seconds=2)
+    def btn_upcoming(message):
+        """Upcoming birthdays button."""
+        logger.info(f"Button UPCOMING clicked by {message.from_user.id}")
+        
+        try:
+            user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
+            birthdays = BirthdayDB.get_upcoming(user_id, days=30)
+            
+            if not birthdays:
+                bot.send_message(
+                    message.chat.id,
+                    '📅 <b>В ближайшие 30 дней нет дней рождения.</b>',
+                    parse_mode='HTML'
+                )
+                return
+            
+            text = '🔔 <b>Ближайшие дни рождения:</b>\n\n'
+            today = date.today()
+            
+            for bd in birthdays:
+                date_str = bd['birth_date'].strftime('%d.%m')
+                days_left = days_until_birthday(bd['birth_date'], today)
+                
+                text += f'👤 <b>{bd["friend_name"]}</b> - {date_str}'
+                
+                if days_left == 0:
+                    text += ' 🎉 <b>СЕГОДНЯ!</b>'
+                elif days_left == 1:
+                    text += ' (завтра)'
+                else:
+                    text += f' (через {days_left} дн.)'
+                
+                text += '\n'
+            
+            bot.send_message(message.chat.id, text, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Error in btn_upcoming: {e}")
             bot.reply_to(message, MESSAGES['error'])
     
     @bot.message_handler(func=lambda m: m.text == '🔔 Ближайшие')

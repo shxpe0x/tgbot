@@ -9,9 +9,11 @@ def get_main_menu() -> types.ReplyKeyboardMarkup:
     btn_list = types.KeyboardButton('📋 Список')
     btn_upcoming = types.KeyboardButton('🔔 Ближайшие')
     btn_delete = types.KeyboardButton('🗑️ Удалить')
+    btn_sdr = types.KeyboardButton('С днем рождения')
     
     markup.add(btn_add, btn_list)
     markup.add(btn_upcoming, btn_delete)
+    markup.add(btn_sdr)
     
     return markup
 
