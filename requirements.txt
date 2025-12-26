@@ -1,7 +1,3 @@
-# Core dependencies
-pyTelegramBotAPI==4.29.1
-mysql-connector-python==9.1.0
-python-dotenv==1.0.1
-
-# Optional dependencies (for scheduler)
-# APScheduler==3.10.4
+pyTelegramBotAPI==4.14.0
+python-dotenv==1.0.0
+apscheduler==3.10.4
