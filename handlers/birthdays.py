@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, date
 from database.models import UserDB, BirthdayDB, MAX_BIRTHDAYS_PER_USER
 from keyboards.reply_keyboards import get_main_menu, get_cancel_keyboard
+from keyboards.inline_keyboards import get_delete_keyboard, get_confirm_keyboard
 from config import MESSAGES
 from utils.rate_limiter import rate_limit
 from utils.date_helpers import calculate_age, days_until_birthday
@@ -170,7 +171,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     @bot.message_handler(func=lambda m: m.text == '🗑️ Удалить')
     @rate_limit(seconds=2)
     def btn_delete(message):
-        """Delete birthday button."""
+        """Delete birthday button with inline keyboard."""
         logger.info(f"Button DELETE clicked by {message.from_user.id}")
         
         try:
@@ -185,18 +186,12 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                 )
                 return
             
-            user_states[message.chat.id] = 'waiting_delete'
-            user_data[message.chat.id] = {'birthdays': birthdays}
-            
-            text = '🗑️ <b>Введи номер для удаления:</b>\n\n'
-            for i, bd in enumerate(birthdays, 1):
-                date_str = bd['birth_date'].strftime('%d.%m')
-                text += f'{i}. {bd["friend_name"]} - {date_str}\n'
-            
+            # Use inline keyboard instead of text input
+            text = '🗑️ <b>Выбери кого удалить:</b>'
             bot.send_message(
                 message.chat.id,
                 text,
-                reply_markup=get_cancel_keyboard(),
+                reply_markup=get_delete_keyboard(birthdays),
                 parse_mode='HTML'
             )
         except Exception as e:
@@ -242,7 +237,7 @@ def register_birthday_handlers(bot: telebot.TeleBot):
     
     @bot.message_handler(func=lambda m: user_states.get(m.chat.id) == 'waiting_date')
     def state_waiting_date(message):
-        """Get date and save with improved validation."""
+        """Get date and show confirmation with inline buttons."""
         logger.info(f"Got date: {message.text}")
         try:
             date_text = message.text.strip()
@@ -306,86 +301,142 @@ def register_birthday_handlers(bot: telebot.TeleBot):
                 )
                 return
             
-            # Save to DB
-            user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
+            # Store data and show confirmation
             name = user_data[message.chat.id]['name']
+            user_data[message.chat.id]['birth_date'] = birth_date
+            user_data[message.chat.id]['birth_year'] = birth_year
+            user_states[message.chat.id] = 'waiting_confirmation'
+            
+            date_str = birth_date.strftime('%d.%m.%Y') if birth_year else birth_date.strftime('%d.%m')
+            
+            confirmation_text = (
+                f'📋 <b>Проверь данные:</b>\n\n'
+                f'👤 {html_module.escape(name)}\n'
+                f'📅 {date_str}\n\n'
+                f'<i>Всё верно?</i>'
+            )
+            
+            bot.send_message(
+                message.chat.id,
+                confirmation_text,
+                reply_markup=get_confirm_keyboard(),
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in state_waiting_date: {e}", exc_info=True)
+            bot.send_message(
+                message.chat.id,
+                '❌ Ошибка при обработке',
+                reply_markup=get_cancel_keyboard()
+            )
+    
+    # ==================== CALLBACK HANDLERS (INLINE BUTTONS) ====================
+    
+    @bot.callback_query_handler(func=lambda call: call.data == 'confirm_add')
+    def callback_confirm_add(call):
+        """Confirm and save birthday."""
+        try:
+            if call.message.chat.id not in user_data:
+                bot.answer_callback_query(call.id, '❌ Данные устарели, начни заново')
+                return
+            
+            data = user_data[call.message.chat.id]
+            user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
             
             birthday_id = BirthdayDB.add(
                 user_id=user_id,
-                friend_name=name,
-                birth_date=birth_date,
-                birth_year=birth_year
+                friend_name=data['name'],
+                birth_date=data['birth_date'],
+                birth_year=data['birth_year']
             )
             
             logger.info(f"Birthday saved with ID: {birthday_id}")
             
             # Clear state
-            user_states.pop(message.chat.id, None)
-            user_data.pop(message.chat.id, None)
+            user_states.pop(call.message.chat.id, None)
+            user_data.pop(call.message.chat.id, None)
             
-            # Success
-            date_str = birth_date.strftime('%d.%m.%Y') if birth_year else birth_date.strftime('%d.%m')
-            bot.send_message(
-                message.chat.id,
-                f'✅ <b>Добавлено!</b>\n\n👤 {html_module.escape(name)}\n📅 {date_str}',
-                reply_markup=get_main_menu(),
+            # Edit message to show success
+            date_str = data['birth_date'].strftime('%d.%m.%Y') if data['birth_year'] else data['birth_date'].strftime('%d.%m')
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=f'✅ <b>Добавлено!</b>\n\n👤 {html_module.escape(data["name"])}\n📅 {date_str}',
                 parse_mode='HTML'
             )
             
-        except ValueError as e:
-            logger.error(f"Validation error in state_waiting_date: {e}")
-            if 'Birthday limit reached' in str(e):
-                bot.send_message(
-                    message.chat.id,
-                    f'❌ <b>Достигнут лимит:</b> {MAX_BIRTHDAYS_PER_USER} дней рождения',
-                    reply_markup=get_main_menu(),
-                    parse_mode='HTML'
-                )
-            else:
-                bot.send_message(
-                    message.chat.id,
-                    '❌ Ошибка при сохранении',
-                    reply_markup=get_main_menu()
-                )
-        except Exception as e:
-            logger.error(f"Error in state_waiting_date: {e}", exc_info=True)
+            bot.answer_callback_query(call.id, '✅ Сохранено!')
+            
+            # Send main menu
             bot.send_message(
-                message.chat.id,
-                '❌ Ошибка при сохранении',
+                call.message.chat.id,
+                'Выбери действие:',
                 reply_markup=get_main_menu()
             )
-    
-    @bot.message_handler(func=lambda m: user_states.get(m.chat.id) == 'waiting_delete')
-    def state_waiting_delete(message):
-        """Delete by number."""
-        try:
-            num = int(message.text)
-            birthdays = user_data[message.chat.id]['birthdays']
             
-            if num < 1 or num > len(birthdays):
-                bot.send_message(message.chat.id, '❌ Неверный номер!')
-                return
-            
-            bd = birthdays[num - 1]
-            user_id = UserDB.create_or_get(message.from_user.id, message.from_user.username)
-            
-            if BirthdayDB.delete(bd['id'], user_id):
-                user_states.pop(message.chat.id, None)
-                user_data.pop(message.chat.id, None)
-                
-                bot.send_message(
-                    message.chat.id,
-                    '✅ <b>Удалено!</b>',
-                    reply_markup=get_main_menu(),
+        except ValueError as e:
+            logger.error(f"Validation error: {e}")
+            if 'Birthday limit reached' in str(e):
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    text=f'❌ <b>Достигнут лимит:</b> {MAX_BIRTHDAYS_PER_USER} дней рождения',
                     parse_mode='HTML'
                 )
             else:
-                bot.send_message(message.chat.id, '❌ Ошибка удаления')
-        except ValueError:
-            bot.send_message(message.chat.id, '❌ Введи номер!')
+                bot.answer_callback_query(call.id, '❌ Ошибка при сохранении')
         except Exception as e:
-            logger.error(f"Error in state_waiting_delete: {e}")
-            bot.send_message(message.chat.id, '❌ Ошибка')
+            logger.error(f"Error in callback_confirm_add: {e}", exc_info=True)
+            bot.answer_callback_query(call.id, '❌ Ошибка')
+    
+    @bot.callback_query_handler(func=lambda call: call.data == 'cancel_add')
+    def callback_cancel_add(call):
+        """Cancel adding birthday."""
+        user_states.pop(call.message.chat.id, None)
+        user_data.pop(call.message.chat.id, None)
+        
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text='❌ <b>Отменено</b>',
+            parse_mode='HTML'
+        )
+        
+        bot.answer_callback_query(call.id, '❌ Отменено')
+        
+        bot.send_message(
+            call.message.chat.id,
+            'Выбери действие:',
+            reply_markup=get_main_menu()
+        )
+    
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
+    def callback_delete(call):
+        """Delete birthday by ID from inline button."""
+        try:
+            birthday_id = int(call.data.split('_')[1])
+            user_id = UserDB.create_or_get(call.from_user.id, call.from_user.username)
+            
+            if BirthdayDB.delete(birthday_id, user_id):
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    text='✅ <b>Удалено!</b>',
+                    parse_mode='HTML'
+                )
+                bot.answer_callback_query(call.id, '✅ Удалено!')
+            else:
+                bot.answer_callback_query(call.id, '❌ Ошибка удаления')
+        except Exception as e:
+            logger.error(f"Error in callback_delete: {e}")
+            bot.answer_callback_query(call.id, '❌ Ошибка')
+    
+    @bot.callback_query_handler(func=lambda call: call.data == 'back_to_menu')
+    def callback_back_to_menu(call):
+        """Return to main menu."""
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id)
     
     # ==================== FALLBACK HANDLER ====================
     
