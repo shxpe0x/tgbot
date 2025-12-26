@@ -7,15 +7,6 @@ load_dotenv()
 # Bot Configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
-# Database Configuration
-DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'user': os.getenv('DB_USER', 'bot_user'),
-    'password': os.getenv('DB_PASSWORD', ''),
-    'database': os.getenv('DB_NAME', 'birthdays_db'),
-    'pool_size': int(os.getenv('DB_POOL_SIZE', 5))
-}
-
 # Notification Settings
 NOTIFICATION_TIME = {
     'hour': int(os.getenv('NOTIFICATION_HOUR', 9)),
