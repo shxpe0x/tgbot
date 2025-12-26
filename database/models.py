@@ -2,7 +2,6 @@
 import logging
 import html
 from datetime import datetime, date
-from mysql.connector import Error
 from .db import get_connection
 from utils.date_helpers import days_until_birthday
 
@@ -16,35 +15,33 @@ class UserDB:
     
     @staticmethod
     def create_or_get(telegram_id: int, username: str = None) -> int:
-        """Create user or get existing user ID with transaction safety."""
+        """Create user or get existing user ID."""
         conn = None
         try:
             conn = get_connection()
-            conn.start_transaction()
+            cursor = conn.cursor()
             
-            with conn.cursor(dictionary=True) as cursor:
-                # Try to get existing user with FOR UPDATE lock
-                cursor.execute(
-                    "SELECT id FROM users WHERE telegram_id = %s FOR UPDATE",
-                    (telegram_id,)
-                )
-                result = cursor.fetchone()
+            # Try to get existing user
+            cursor.execute(
+                "SELECT id FROM users WHERE telegram_id = ?",
+                (telegram_id,)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                return result['id']
+            
+            # Create new user
+            cursor.execute(
+                "INSERT INTO users (telegram_id, username) VALUES (?, ?)",
+                (telegram_id, username)
+            )
+            user_id = cursor.lastrowid
+            conn.commit()
+            logger.info(f"Created new user: {telegram_id}")
+            return user_id
                 
-                if result:
-                    conn.commit()
-                    return result['id']
-                
-                # Create new user
-                cursor.execute(
-                    "INSERT INTO users (telegram_id, username) VALUES (%s, %s)",
-                    (telegram_id, username)
-                )
-                user_id = cursor.lastrowid
-                conn.commit()
-                logger.info(f"Created new user: {telegram_id}")
-                return user_id
-                
-        except Error as e:
+        except Exception as e:
             logger.error(f"Error in create_or_get user: {e}")
             if conn:
                 conn.rollback()
@@ -66,29 +63,29 @@ class BirthdayDB:
             friend_name = html.escape(friend_name.strip())
             
             conn = get_connection()
+            cursor = conn.cursor()
             
-            with conn.cursor() as cursor:
-                # Check birthday count limit
-                cursor.execute(
-                    "SELECT COUNT(*) as count FROM birthdays WHERE user_id = %s",
-                    (user_id,)
-                )
-                result = cursor.fetchone()
-                
-                if result[0] >= MAX_BIRTHDAYS_PER_USER:
-                    raise ValueError(f"Birthday limit reached ({MAX_BIRTHDAYS_PER_USER} max)")
-                
-                # Add birthday
-                cursor.execute(
-                    '''INSERT INTO birthdays 
-                       (user_id, friend_name, birth_date, birth_year, remind_days_before)
-                       VALUES (%s, %s, %s, %s, %s)''',
-                    (user_id, friend_name, birth_date, birth_year, remind_days)
-                )
-                birthday_id = cursor.lastrowid
-                conn.commit()
-                logger.info(f"Added birthday {birthday_id} for user {user_id}")
-                return birthday_id
+            # Check birthday count limit
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM birthdays WHERE user_id = ?",
+                (user_id,)
+            )
+            result = cursor.fetchone()
+            
+            if result['count'] >= MAX_BIRTHDAYS_PER_USER:
+                raise ValueError(f"Birthday limit reached ({MAX_BIRTHDAYS_PER_USER} max)")
+            
+            # Add birthday
+            cursor.execute(
+                '''INSERT INTO birthdays 
+                   (user_id, friend_name, birth_date, birth_year, remind_days_before)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (user_id, friend_name, birth_date.isoformat(), birth_year, remind_days)
+            )
+            birthday_id = cursor.lastrowid
+            conn.commit()
+            logger.info(f"Added birthday {birthday_id} for user {user_id}")
+            return birthday_id
                 
         except ValueError:
             raise  # Re-raise validation errors
@@ -107,14 +104,26 @@ class BirthdayDB:
         conn = None
         try:
             conn = get_connection()
-            with conn.cursor(dictionary=True) as cursor:
-                cursor.execute(
-                    '''SELECT id, friend_name, birth_date, birth_year, remind_days_before
-                       FROM birthdays WHERE user_id = %s
-                       ORDER BY MONTH(birth_date), DAY(birth_date)''',
-                    (user_id,)
-                )
-                return cursor.fetchall()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                '''SELECT id, friend_name, birth_date, birth_year, remind_days_before
+                   FROM birthdays WHERE user_id = ?
+                   ORDER BY strftime('%m-%d', birth_date)''',
+                (user_id,)
+            )
+            
+            results = cursor.fetchall()
+            
+            # Convert to list of dicts and parse dates
+            birthdays = []
+            for row in results:
+                bd = dict(row)
+                bd['birth_date'] = date.fromisoformat(bd['birth_date'])
+                birthdays.append(bd)
+            
+            return birthdays
+            
         except Exception as e:
             logger.error(f"Error getting birthdays: {e}")
             raise
@@ -128,16 +137,17 @@ class BirthdayDB:
         conn = None
         try:
             conn = get_connection()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "DELETE FROM birthdays WHERE id = %s AND user_id = %s",
-                    (birthday_id, user_id)
-                )
-                conn.commit()
-                deleted = cursor.rowcount > 0
-                if deleted:
-                    logger.info(f"Deleted birthday {birthday_id} for user {user_id}")
-                return deleted
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "DELETE FROM birthdays WHERE id = ? AND user_id = ?",
+                (birthday_id, user_id)
+            )
+            conn.commit()
+            deleted = cursor.rowcount > 0
+            if deleted:
+                logger.info(f"Deleted birthday {birthday_id} for user {user_id}")
+            return deleted
         except Exception as e:
             logger.error(f"Error deleting birthday: {e}")
             if conn:
@@ -153,29 +163,32 @@ class BirthdayDB:
         conn = None
         try:
             conn = get_connection()
-            with conn.cursor(dictionary=True) as cursor:
-                # Get all birthdays for user
-                cursor.execute(
-                    '''SELECT id, friend_name, birth_date, birth_year
-                       FROM birthdays WHERE user_id = %s''',
-                    (user_id,)
-                )
-                all_birthdays = cursor.fetchall()
+            cursor = conn.cursor()
+            
+            # Get all birthdays for user
+            cursor.execute(
+                '''SELECT id, friend_name, birth_date, birth_year
+                   FROM birthdays WHERE user_id = ?''',
+                (user_id,)
+            )
+            all_birthdays = cursor.fetchall()
+            
+            # Filter using date_helpers for consistency
+            today = date.today()
+            upcoming = []
+            
+            for row in all_birthdays:
+                bd = dict(row)
+                bd['birth_date'] = date.fromisoformat(bd['birth_date'])
+                days_until = days_until_birthday(bd['birth_date'], today)
                 
-                # Filter using date_helpers for consistency
-                today = date.today()
-                upcoming = []
-                
-                for bd in all_birthdays:
-                    days_until = days_until_birthday(bd['birth_date'], today)
-                    
-                    if 0 <= days_until <= days:
-                        upcoming.append(bd)
-                
-                # Sort by days until birthday
-                upcoming.sort(key=lambda x: days_until_birthday(x['birth_date'], today))
-                
-                return upcoming
+                if 0 <= days_until <= days:
+                    upcoming.append(bd)
+            
+            # Sort by days until birthday
+            upcoming.sort(key=lambda x: days_until_birthday(x['birth_date'], today))
+            
+            return upcoming
         except Exception as e:
             logger.error(f"Error getting upcoming birthdays: {e}")
             raise
