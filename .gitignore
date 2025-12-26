@@ -1,8 +1,9 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -16,8 +17,6 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -26,8 +25,9 @@ share/python-wheels/
 venv/
 env/
 ENV/
-env.bak/
-venv.bak/
+
+# Environment variables
+.env
 
 # IDE
 .vscode/
@@ -36,16 +36,11 @@ venv.bak/
 *.swo
 *~
 
-# Environment variables
-.env
-.env.local
-.env.*.local
-
 # Logs
 *.log
-logs/
 
 # Database
+birthdays.db
 *.db
 *.sqlite
 *.sqlite3
@@ -53,6 +48,3 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
-
-# Project specific
-bot.log
